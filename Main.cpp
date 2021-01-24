@@ -9,8 +9,77 @@
 #include "lyra/lyra.hpp"
 #include "CImg.h"
 #include "CL/cl.hpp"
+#include "FreeImage/FreeImage.h"
 
 using namespace cimg_library;
+
+FIBITMAP* GenericLoader(const char* lpszPathName, FREE_IMAGE_FORMAT &fif, int flag) {
+
+	// check the file signature and deduce its format
+	// (the second argument is currently not used by FreeImage)
+	fif = FreeImage_GetFileType(lpszPathName, 0);
+	if (fif == FIF_UNKNOWN) {
+		// no signature ?
+		// try to guess the file format from the file extension
+		fif = FreeImage_GetFIFFromFilename(lpszPathName);
+	}
+	// check that the plugin has reading capabilities ...
+	if ((fif != FIF_UNKNOWN) && FreeImage_FIFSupportsReading(fif)) {
+		// ok, let's load the file
+		FIBITMAP *dib = FreeImage_Load(fif, lpszPathName, flag);
+		// unless a bad file format, we are done !
+		return dib;
+	}
+	return NULL;
+}
+
+
+float* loadImageData(std::string filename, int& width, int& height) {
+	FIBITMAP *dib = NULL;
+	FREE_IMAGE_FORMAT fif = FIF_UNKNOWN;
+
+	dib = GenericLoader(filename.data(), fif, 0);
+
+	if (dib == NULL) {
+		std::cout << "Cannot open " << filename.data();
+		exit(2);
+	}
+	else {
+
+		float*output = NULL;
+
+		if (fif != FIF_BMP) {
+
+			dib = FreeImage_ConvertTo32Bits(dib);
+			dib = FreeImage_GetChannel(dib, FICC_RED);
+		}
+
+		if (dib != NULL) {
+
+			height = FreeImage_GetHeight(dib);
+			width = FreeImage_GetWidth(dib);
+
+			output = (float*)malloc(width*height * sizeof(float));
+
+			int pindex = 0;
+
+			for (int y = height - 1; y >= 0; y--) {
+				BYTE *bits = (BYTE *)FreeImage_GetScanLine(dib, y);
+				for (int x = 0; x < width; x++) {
+					
+					float val = (float)bits[x];
+					output[pindex] = val;
+
+					pindex++;
+				}
+			}
+		}
+
+		return output;
+	}
+
+	return NULL;
+}
 
 // Display image on the screen
 void show_img(CImg<> img, const char* wname = "") {
@@ -147,14 +216,6 @@ bool is_device_available(int plat_id, int dev_id) {
 	return false;
 }
 
-bool check_file_format(std::string filename) {
-	std::size_t contains = filename.find(".");
-	if (contains < 0) {
-		return false;
-	}
-	std::size_t found = filename.find_last_of(".");
-	return filename.substr(found + 1)  == "bmp";
-}
 
 // ROTAZIONE SEQUENZIALE
 
@@ -202,11 +263,11 @@ float apply_filter(float* image, int width, int height,
 
 	for (int i = -half_filter_size; i <= half_filter_size; i++) {
 
-		y_coord = std::min(height, std::max(y + i, 0));
+		y_coord = std::min(height - 1, std::max(y + i, 0));
 
 		for (int j = -half_filter_size; j <= half_filter_size; j++) {
 
-			x_coord = std::min(width, std::max(x + j, 0));
+			x_coord = std::min(width - 1, std::max(x + j, 0));
 			float srcPx = image[y_coord * width + x_coord];
 			new_pixel += srcPx * filter[filterIndex];
 
@@ -449,32 +510,41 @@ void benchmark_rotation(std::vector<std::string> filenames, int platform_id = 0,
 
 	for (int i = 0; i < (int) filenames.size(); i++) {
 		std::string filename = filenames[i];
-		CImg<float> image(filename.data());
 
-		float* output = (float*)malloc(sizeof(float) * image.width() * image.height());
-		fill_zero(output, image.width(), image.height());
+		int width = 0;
+		int height = 0;
+		float* image = loadImageData(filename, width, height);
 
-		// Sequential Execution
+		if (image != NULL) {
 
-		auto t1 = std::chrono::high_resolution_clock::now();
+			float* output = (float*)malloc(sizeof(float) * width * height);
+			fill_zero(output, width, height);
 
-		rotate(image.data(), image.width(), image.height(), M_PI_4, output);
+			// Sequential Execution
 
-		auto t2 = std::chrono::high_resolution_clock::now();
-		float exec_time = std::chrono::duration_cast<std::chrono::duration<float>>(t2 - t1).count();
+			auto t1 = std::chrono::high_resolution_clock::now();
 
-		std::cout << filename << "  (" << image.width() << " x " << image.height() << ") --> " << exec_time;
+			rotate(image, width, height, M_PI_4, output);
 
-		// Parallel Execution
+			auto t2 = std::chrono::high_resolution_clock::now();
+			float exec_time = std::chrono::duration_cast<std::chrono::duration<float>>(t2 - t1).count();
 
-		t1 = std::chrono::high_resolution_clock::now();
+			std::cout << filename << "  (" << width << " x " << height << ") --> " << exec_time;
 
-		p_rotate(image.data(), image.width(), image.height(), M_PI_4, output, platform_id, dev_id, false);
+			// Parallel Execution
 
-		t2 = std::chrono::high_resolution_clock::now();
-		exec_time = std::chrono::duration_cast<std::chrono::duration<float>>(t2 - t1).count();
+			t1 = std::chrono::high_resolution_clock::now();
 
-		std::cout << "  ||  " << exec_time << "\n";
+			p_rotate(image, width, height, M_PI_4, output, platform_id, dev_id, false);
+
+			t2 = std::chrono::high_resolution_clock::now();
+			exec_time = std::chrono::duration_cast<std::chrono::duration<float>>(t2 - t1).count();
+
+			std::cout << "  ||  " << exec_time << "\n";
+		}
+		else {
+			std::cerr << "Error in reading " << filename.data() << std::endl;
+		}
 	}
 }
 
@@ -485,34 +555,43 @@ void benchmark_convolution(std::vector<std::string> filenames, int platform_id =
 	std::cout << "  Image (image size) --> Sequential Execution Time || Parallel Execution Time \n\n";
 	std::cout << "***************************************************************************\n\n";
 
-	for (int i = 0; i < (int) filenames.size(); i++) {
+	for (int i = 0; i < (int)filenames.size(); i++) {
 		std::string filename = filenames[i];
-		CImg<float> image(filename.data());
 
-		float* output = (float*)malloc(sizeof(float) * image.width() * image.height());
-		fill_zero(output, image.width(), image.height());
+		int width = 0;
+		int height = 0;
+		float* image = loadImageData(filename, width, height);
 
-		// Sequential Execution
+		if (image != NULL) {
 
-		auto t1 = std::chrono::high_resolution_clock::now();
+			float* output = (float*)malloc(sizeof(float) * width * height);
+			fill_zero(output, width, height);
 
-		convolution2D(image.data(), image.width(), image.height(), sobel, 3, output);
+			// Sequential Execution
 
-		auto t2 = std::chrono::high_resolution_clock::now();
-		float exec_time = std::chrono::duration_cast<std::chrono::duration<float>>(t2 - t1).count();
+			auto t1 = std::chrono::high_resolution_clock::now();
 
-		std::cout << filename << "  (" << image.width() << " x " << image.height() << ") --> " << exec_time;
+			convolution2D(image, width, height, sobel, 3, output);
 
-		// Parallel Execution
+			auto t2 = std::chrono::high_resolution_clock::now();
+			float exec_time = std::chrono::duration_cast<std::chrono::duration<float>>(t2 - t1).count();
 
-		t1 = std::chrono::high_resolution_clock::now();
+			std::cout << filename << "  (" << width << " x " << height << ") --> " << exec_time;
 
-		p_convolution2D(image.data(), image.width(), image.height(), sobel, 3, output, platform_id, dev_id, false);
+			// Parallel Execution
 
-		t2 = std::chrono::high_resolution_clock::now();
-		exec_time = std::chrono::duration_cast<std::chrono::duration<float>>(t2 - t1).count();
+			t1 = std::chrono::high_resolution_clock::now();
 
-		std::cout << "  ||  " << exec_time << "\n";
+			p_convolution2D(image, width, height, sobel, 3, output, platform_id, dev_id, false);
+
+			t2 = std::chrono::high_resolution_clock::now();
+			exec_time = std::chrono::duration_cast<std::chrono::duration<float>>(t2 - t1).count();
+
+			std::cout << "  ||  " << exec_time << "\n";
+		}
+		else {
+			std::cerr << "Error in reading " << filename.data() << std::endl;
+		}
 	}
 }
 
@@ -559,24 +638,17 @@ struct rotation_cmd {
 
 	void run(const lyra::group & g) {
 
-		if (!check_file_format(rot_target)) {
-			std::cout << "Sorry, " << rot_target << " can't be processed, only bitmap (.bmp) files accepted" << std::endl;
-			exit(2);
-		}
-
-		CImg<float> image;
 		float exec_time = 0.0f;
-
-		try {
-			image = CImg<float>(rot_target.data());
-		}
-		catch (...) {
+		int width = 0;
+		int height = 0;
+		float* image = loadImageData(rot_target, width, height);
+		if(image == NULL){
 			std::cerr << "Error in reading input file" << std::endl;
 			exit(2);
 		}
 
-		float* output = (float*)malloc(sizeof(float) * image.width() * image.height());
-		fill_zero(output, image.width(), image.height());
+		float* output = (float*)malloc(sizeof(float) * width * height);
+		fill_zero(output, width, height);
 		float rad = deg * M_PI / 180;
 
 		if (parallel) {
@@ -588,7 +660,7 @@ struct rotation_cmd {
 
 			auto t1 = std::chrono::high_resolution_clock::now();
 
-			p_rotate(image.data(), image.width(), image.height(), rad, output, plat_id, dev_id);
+			p_rotate(image, width, height, rad, output, plat_id, dev_id);
 
 			auto t2 = std::chrono::high_resolution_clock::now();
 			exec_time = std::chrono::duration_cast<std::chrono::duration<float>>(t2 - t1).count();
@@ -596,16 +668,16 @@ struct rotation_cmd {
 		else {
 			auto t1 = std::chrono::high_resolution_clock::now();
 
-			rotate(image.data(), image.width(), image.height(), rad, output);
+			rotate(image, width, height, rad, output);
 
 			auto t2 = std::chrono::high_resolution_clock::now();
 			exec_time = std::chrono::duration_cast<std::chrono::duration<float>>(t2 - t1).count();
 		}
 
-		std::cout << "Image size = " << image.width() << " x " << image.height() << std::endl;
+		std::cout << "Image size = " << width << " x " << height << std::endl;
 		std::cout << "Execution time: " << exec_time << " s" << std::endl;
 
-		CImg<float> result(output, image.width(), image.height(), 1, 1);
+		CImg<float> result(output, width, height, 1, 1);
 		if (dst_filename != "") {
 			result.save(dst_filename.data());
 		}
@@ -650,24 +722,17 @@ struct filter_cmd {
 
 	void run(const lyra::group & g) {
 
-		if (!check_file_format(filter_target)) {
-			std::cout << "Sorry, " << filter_target << " can't be processed, only bitmap (.bmp) files accepted" << std::endl;
-			exit(2);
-		}
-
-		CImg<float> image;
 		float exec_time = 0.0f;
-
-		try {
-			image = CImg<float>(filter_target.data());
-		}
-		catch (...) {
+		int width = 0;
+		int height = 0;
+		float* image = loadImageData(filter_target, width, height);
+		if (image == NULL) {
 			std::cerr << "Error in reading input file" << std::endl;
 			exit(2);
 		}
 
-		float* output = (float*)malloc(sizeof(float) * image.width() * image.height());
-		fill_zero(output, image.width(), image.height());
+		float* output = (float*)malloc(sizeof(float) * width * height);
+		fill_zero(output, width, height);
 
 		if (parallel) {
 
@@ -678,7 +743,7 @@ struct filter_cmd {
 
 			auto t1 = std::chrono::high_resolution_clock::now();
 
-			p_convolution2D(image.data(), image.width(), image.height(), sobel, 3, output, plat_id, dev_id);
+			p_convolution2D(image, width, height, sobel, 3, output, plat_id, dev_id);
 
 			auto t2 = std::chrono::high_resolution_clock::now();
 			exec_time = std::chrono::duration_cast<std::chrono::duration<float>>(t2 - t1).count();
@@ -686,16 +751,16 @@ struct filter_cmd {
 		else {
 			auto t1 = std::chrono::high_resolution_clock::now();
 
-			convolution2D(image.data(), image.width(), image.height(), sobel, 3, output);
+			convolution2D(image, width, height, sobel, 3, output);
 
 			auto t2 = std::chrono::high_resolution_clock::now();
 			exec_time = std::chrono::duration_cast<std::chrono::duration<float>>(t2 - t1).count();
 		}
 
-		std::cout << "Image size = " << image.width() << " x " << image.height() << std::endl;
+		std::cout << "Image size = " << width << " x " << height << std::endl;
 		std::cout << "Execution time: " << exec_time << " s" <<std::endl;
 
-		CImg<float> result(output, image.width(), image.height(), 1, 1);
+		CImg<float> result(output, width, height, 1, 1);
 		if (dst_filename != "") {
 			result.save(dst_filename.data());
 		}
@@ -732,13 +797,6 @@ struct benchmark_cmd {
 			std::cout << "Device ID " << dev_id << " not available for Platform ID " << plat_id << std::endl;
 			std::cout << "Please check available devices using 'oclinfo' command" << std::endl;
 			exit(10);
-		}
-
-		for (std::string file : benchmark_images) {
-			if (!check_file_format(file)) {
-				std::cout << "Sorry, " << file << " can't be processed, only bitmap (.bmp) files accepted" << std::endl;
-				exit(2);
-			}
 		}
 
 		benchmark_rotation(benchmark_images, plat_id, dev_id);

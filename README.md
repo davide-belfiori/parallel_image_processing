@@ -13,7 +13,7 @@ First clone this repository:
 git clone https://github.com/davide-belfiori/parallel_image_processing
 cd parallel_image_processing
 ```
-Add 2 Environmet variable to your system, one named `OCL_INCLUDE` containing path to your OpenCL **headers** directory, and one named `OCL_LIB` containing path to the OpenCL **library** directory.
+Add 2 environment variables to your system, one named `OCL_INCLUDE` containing path to your OpenCL **headers** directory, and one named `OCL_LIB` containing path to the OpenCL **library** directory.
 Example for NVIDIA platform:
 ```
 OCL_INCLUDE = C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.1\include
